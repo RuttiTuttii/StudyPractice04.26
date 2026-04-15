@@ -6,42 +6,44 @@ import json
 import os
 import urllib.parse
 
-# ----- работа с json -----
+# работа с базой данных (json)
 
 def load_users():
-    """загружает список пользователей из users.json, если файла нет — возвращает пустой список"""
+    # грузим юзеров, если файла нет — отдаем пустой список
     if os.path.exists("users.json"):
         with open("users.json", "r", encoding="utf-8") as f:
             return json.load(f)
     return []
 
 def save_users(users):
-    """сохраняет список пользователей в users.json"""
+    # сохраняем всю пачку юзеров обратно в файл
     with open("users.json", "w", encoding="utf-8") as f:
         json.dump(users, f, indent=4, ensure_ascii=False)
 
 def load_remembered():
-    """загружает запомненные пароли (логин: пароль)"""
+    # подтягиваем сохраненные пароли
     if os.path.exists("remembered.json"):
         with open("remembered.json", "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
 def save_remembered(remembered):
-    """сохраняет запомненные пароли"""
+    # сохраняем данные для автозаполнения
     with open("remembered.json", "w", encoding="utf-8") as f:
         json.dump(remembered, f, indent=4, ensure_ascii=False)
 
-# ----- python‑функции, вызываемые из javascript -----
+# мост между python и javascript
 
-def on_register(login, password, about, gender, continent):
-    """регистрация нового пользователя, возвращает статус и сообщение"""
+def on_register(login, password, about, gender, continent, js_callback=None, *args):
+    # регистрируем юзера, js_callback ловит ту самую функцию из браузера
     users = load_users()
-    # проверяем, не занят ли логин
+    
     for u in users:
         if u["login"] == login:
-            return {"ok": False, "msg": "логин уже занят"}
-    # добавляем нового пользователя
+            if js_callback:
+                js_callback.Call({"ok": False, "msg": "логин уже занят"})
+            return
+
     users.append({
         "login": login,
         "password": password,
@@ -50,60 +52,66 @@ def on_register(login, password, about, gender, continent):
         "continent": continent
     })
     save_users(users)
-    return {"ok": True, "msg": "регистрация успешна! теперь войдите"}
+    
+    if js_callback:
+        js_callback.Call({"ok": True, "msg": "регистрация успешна! теперь войдите"})
 
-def on_login(login, password, remember):
-    """проверка логина и пароля, при remember=true сохраняет пароль"""
+def on_login(login, password, remember, js_callback=None, *args):
+    # проверяем данные и сохраняем пароль, если стояла галочка
     users = load_users()
     for u in users:
         if u["login"] == login and u["password"] == password:
+            remembered = load_remembered()
             if remember:
-                remembered = load_remembered()
                 remembered[login] = password
-                save_remembered(remembered)
             else:
-                # если галка снята, удаляем сохранённый пароль для этого логина
-                remembered = load_remembered()
                 if login in remembered:
                     del remembered[login]
-                    save_remembered(remembered)
-            return {"ok": True, "msg": f"добро пожаловать, {login}!"}
-    return {"ok": False, "msg": "неверный логин или пароль"}
+            save_remembered(remembered)
+            
+            if js_callback:
+                js_callback.Call({"ok": True, "msg": f"добро пожаловать, {login}!"})
+            return
+            
+    if js_callback:
+        js_callback.Call({"ok": False, "msg": "неверный логин или пароль"})
 
-def get_remembered_password(login):
-    """возвращает сохранённый пароль для логина (если есть)"""
+def get_remembered_password(login, js_callback=None, *args):
+    # отдаем пароль для автозаполнения
     remembered = load_remembered()
-    return remembered.get(login, "")
+    if js_callback:
+        js_callback.Call(remembered.get(login, ""))
 
-def update_variable_values(text_val, check_val, radio_val, *args):
-    """для страницы переменных, *args игнорирует лишние параметры от cef"""
-    return {
+def update_variable_values(text_val, check_val, radio_val, js_callback=None, *args):
+    # обновляем тестовые переменные на третьей вкладке
+    data = {
         "text": text_val,
         "checkbox": "да" if check_val else "нет",
         "radio": radio_val
     }
+    if js_callback:
+        js_callback.Call(data)
 
-# ----- основное приложение -----
+# основной интерфейс и логика приложения
 
 def main():
     sys.excepthook = cef.ExceptHook
     cef.Initialize()
 
     root = tk.Tk()
-    root.title("лабораторная работа №14 — всё в одном")
+    root.title("лабораторная работа — монохром")
     root.geometry("800x600")
-    root.configure(bg="#f0f0f0")   # начальный цвет рамки (фона)
+    root.configure(bg="#e5e5e5")
 
-    # фрейм для браузера
+    # фрейм под браузер
     browser_frame = tk.Frame(root)
     browser_frame.pack(fill=tk.BOTH, expand=True)
 
-    # создаём браузер внутри фрейма
     window_info = cef.WindowInfo()
     window_info.SetAsChild(browser_frame.winfo_id(), [0, 0, 800, 600])
     browser = cef.CreateBrowserSync(window_info, url="about:blank")
 
-    # привязываем python‑функции к javascript
+    # связываем функции
     bindings = cef.JavascriptBindings(bindToFrames=False, bindToPopups=False)
     bindings.SetFunction("py_register", on_register)
     bindings.SetFunction("py_login", on_login)
@@ -111,12 +119,13 @@ def main():
     bindings.SetFunction("py_update_vars", update_variable_values)
     browser.SetJavascriptBindings(bindings)
 
-    # ----- html‑код с тремя страницами и tailwind css -----
+    # html и css интерфейс
     html_content = """
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             * {
                 margin: 0;
@@ -124,8 +133,8 @@ def main():
                 box-sizing: border-box;
             }
             body {
-                font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-                background: linear-gradient(135deg, #f5f7fa 0%, #e9eef5 100%);
+                font-family: system-ui, -apple-system, sans-serif;
+                background: #e5e5e5;
                 min-height: 100vh;
                 display: flex;
                 align-items: center;
@@ -133,65 +142,57 @@ def main():
                 padding: 1rem;
             }
             .card {
-                background: white;
-                border-radius: 1.5rem;
-                box-shadow: 0 20px 35px -10px rgba(0,0,0,0.15);
+                background: #ffffff;
+                border-radius: 1rem;
+                box-shadow: 0 10px 25px rgba(0,0,0,0.1);
                 width: 100%;
-                max-width: 28rem;
+                max-width: 24rem;
                 overflow: hidden;
-                transition: transform 0.2s;
             }
             .nav {
                 display: flex;
                 justify-content: center;
                 gap: 0.5rem;
                 padding: 1rem;
-                background: #f8fafc;
-                border-bottom: 1px solid #e2e8f0;
+                background: #f5f5f5;
+                border-bottom: 1px solid #d4d4d4;
+                flex-wrap: wrap;
             }
             .pill {
-                padding: 0.5rem 1.25rem;
-                border-radius: 9999px;
-                border: none;
-                font-size: 0.9rem;
+                padding: 0.5rem 1rem;
+                border-radius: 99px;
+                border: 1px solid #d4d4d4;
+                font-size: 0.85rem;
                 font-weight: 500;
                 cursor: pointer;
-                transition: all 0.2s ease;
-                background: #e2e8f0;
-                color: #1e293b;
+                transition: all 0.2s;
+                background: #ffffff;
+                color: #333333;
             }
             .pill:hover {
-                transform: translateY(-2px);
-                filter: brightness(0.95);
+                background: #e5e5e5;
             }
-            .pill-blue {
-                background: #3b82f6;
-                color: white;
-            }
-            .pill-green {
-                background: #10b981;
-                color: white;
-            }
-            .pill-purple {
-                background: #8b5cf6;
-                color: white;
+            .pill.active {
+                background: #333333;
+                color: #ffffff;
+                border-color: #333333;
             }
             .page {
                 padding: 1.5rem;
-                animation: fadeIn 0.25s ease-out;
+                animation: fadeIn 0.2s ease-out;
             }
             @keyframes fadeIn {
-                from { opacity: 0; transform: translateY(8px); }
+                from { opacity: 0; transform: translateY(5px); }
                 to { opacity: 1; transform: translateY(0); }
             }
             .hidden {
                 display: none;
             }
             h2 {
-                font-size: 1.5rem;
+                font-size: 1.25rem;
                 font-weight: 600;
                 text-align: center;
-                color: #334155;
+                color: #1a1a1a;
                 margin-bottom: 1.25rem;
             }
             .field {
@@ -199,128 +200,110 @@ def main():
             }
             label {
                 display: block;
-                font-size: 0.85rem;
-                font-weight: 500;
-                color: #475569;
-                margin-bottom: 0.25rem;
+                font-size: 0.8rem;
+                font-weight: 600;
+                color: #666666;
+                margin-bottom: 0.3rem;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
             }
-            input, textarea, select {
+            input[type="text"], input[type="password"], textarea, select {
                 width: 100%;
-                padding: 0.6rem 1rem;
-                border: 1px solid #cbd5e1;
-                border-radius: 9999px;
+                padding: 0.6rem;
+                border: 1px solid #cccccc;
+                border-radius: 0.5rem;
                 font-size: 0.9rem;
-                transition: all 0.2s;
-                background: white;
-            }
-            textarea {
-                border-radius: 1rem;
-                resize: vertical;
+                background: #fafafa;
+                color: #1a1a1a;
+                transition: border-color 0.2s;
             }
             input:focus, textarea:focus, select:focus {
                 outline: none;
-                border-color: #3b82f6;
-                box-shadow: 0 0 0 3px rgba(59,130,246,0.2);
-                transform: scale(1.01);
+                border-color: #666666;
+                background: #ffffff;
             }
-            .checkbox-group {
+            textarea {
+                resize: vertical;
+            }
+            .checkbox-group, .radio-group {
                 display: flex;
                 align-items: center;
                 gap: 0.5rem;
-                margin-top: 0.25rem;
-            }
-            .checkbox-group input {
-                width: auto;
-                margin-right: 0.25rem;
+                margin-bottom: 1rem;
             }
             .radio-group {
-                display: flex;
+                flex-wrap: wrap;
                 gap: 1rem;
-                margin-top: 0.25rem;
             }
-            .radio-group label {
-                display: inline-flex;
-                align-items: center;
-                gap: 0.25rem;
+            .radio-group label, .checkbox-group label {
                 font-weight: normal;
+                text-transform: none;
+                letter-spacing: normal;
                 margin: 0;
+                color: #333333;
+                display: flex;
+                align-items: center;
+                gap: 0.3rem;
             }
-            .radio-group input {
-                width: auto;
-                margin: 0;
-            }
-            button {
+            button.btn-main {
                 width: 100%;
                 padding: 0.7rem;
                 border: none;
-                border-radius: 9999px;
-                font-size: 1rem;
+                border-radius: 0.5rem;
+                font-size: 0.95rem;
                 font-weight: 600;
                 cursor: pointer;
                 transition: all 0.2s;
+                background: #1a1a1a;
+                color: #ffffff;
                 margin-top: 0.5rem;
             }
-            button:active {
-                transform: scale(0.97);
+            button.btn-main:hover {
+                background: #404040;
             }
-            .btn-login {
-                background: #3b82f6;
-                color: white;
-            }
-            .btn-login:hover {
-                background: #2563eb;
-                transform: translateY(-1px);
-            }
-            .btn-reg {
-                background: #10b981;
-                color: white;
-            }
-            .btn-reg:hover {
-                background: #059669;
-                transform: translateY(-1px);
+            button.btn-main:active {
+                transform: scale(0.98);
             }
             .msg {
                 text-align: center;
                 font-size: 0.85rem;
-                margin-top: 0.75rem;
-                min-height: 2rem;
-            }
-            .text-green {
-                color: #059669;
-            }
-            .text-red {
-                color: #dc2626;
+                margin-top: 1rem;
+                min-height: 1.2rem;
+                font-weight: 500;
             }
             .var-display {
-                background: #f1f5f9;
-                border-radius: 1rem;
+                background: #f5f5f5;
+                border: 1px solid #e5e5e5;
+                border-radius: 0.5rem;
                 padding: 1rem;
                 text-align: center;
                 margin-top: 1rem;
             }
             .var-display span:first-child {
-                font-weight: 600;
-                color: #334155;
+                font-size: 0.8rem;
+                color: #666666;
+                text-transform: uppercase;
             }
             .var-value {
                 margin-top: 0.5rem;
-                font-size: 0.85rem;
-                color: #475569;
-                word-break: break-word;
+                font-size: 0.9rem;
+                color: #1a1a1a;
+                font-weight: 600;
             }
             .hint {
                 text-align: center;
-                font-size: 0.7rem;
-                color: #94a3b8;
-                margin-top: 0.75rem;
+                font-size: 0.75rem;
+                color: #999999;
+                margin-top: 1rem;
             }
         </style>
         <script>
-            function showPage(pageId) {
-                document.getElementById('loginPage').classList.add('hidden');
-                document.getElementById('registerPage').classList.add('hidden');
-                document.getElementById('varsPage').classList.add('hidden');
+            function showPage(pageId, btnElement) {
+                document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
+                document.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
+                
                 document.getElementById(pageId).classList.remove('hidden');
+                if(btnElement) btnElement.classList.add('active');
             }
 
             window.onload = function() {
@@ -352,17 +335,16 @@ def main():
                 const login = document.getElementById('login_username').value.trim();
                 const password = document.getElementById('login_password').value;
                 const remember = document.getElementById('login_remember').checked;
+                
                 if(!login || !password) {
-                    document.getElementById('login_msg').innerHTML = '<span class="text-red">заполните оба поля</span>';
+                    document.getElementById('login_msg').innerText = 'заполните оба поля';
                     return;
                 }
                 window.py_login(login, password, remember, function(response) {
+                    document.getElementById('login_msg').innerText = response.msg;
                     if(response.ok) {
-                        document.getElementById('login_msg').innerHTML = '<span class="text-green">' + response.msg + '</span>';
                         document.getElementById('login_username').value = '';
                         document.getElementById('login_password').value = '';
-                    } else {
-                        document.getElementById('login_msg').innerHTML = '<span class="text-red">' + response.msg + '</span>';
                     }
                 });
             }
@@ -371,49 +353,46 @@ def main():
                 const login = document.getElementById('reg_login').value.trim();
                 const password = document.getElementById('reg_password').value;
                 const about = document.getElementById('reg_about').value;
+                const continent = document.getElementById('reg_continent').value;
+                
                 let gender = '';
                 const genders = document.getElementsByName('gender');
                 for(let g of genders) {
                     if(g.checked) gender = g.value;
                 }
-                const continent = document.getElementById('reg_continent').value;
+                
                 if(!login || !password) {
-                    document.getElementById('reg_msg').innerHTML = '<span class="text-red">логин и пароль обязательны</span>';
+                    document.getElementById('reg_msg').innerText = 'логин и пароль обязательны';
                     return;
                 }
                 if(!gender) {
-                    document.getElementById('reg_msg').innerHTML = '<span class="text-red">выберите пол</span>';
+                    document.getElementById('reg_msg').innerText = 'выберите пол';
                     return;
                 }
+                
                 window.py_register(login, password, about, gender, continent, function(response) {
+                    document.getElementById('reg_msg').innerText = response.msg;
                     if(response.ok) {
-                        document.getElementById('reg_msg').innerHTML = '<span class="text-green">' + response.msg + '</span>';
                         document.getElementById('reg_login').value = '';
                         document.getElementById('reg_password').value = '';
                         document.getElementById('reg_about').value = '';
-                        let checkedOne = document.querySelector('input[name="gender"]:checked');
-                        if(checkedOne) checkedOne.checked = false;
                         document.getElementById('reg_continent').selectedIndex = 0;
-                        setTimeout(() => showPage('loginPage'), 1500);
-                    } else {
-                        document.getElementById('reg_msg').innerHTML = '<span class="text-red">' + response.msg + '</span>';
+                        document.querySelector('input[name="gender"]:checked').checked = false;
+                        
+                        setTimeout(() => {
+                            document.getElementById('reg_msg').innerText = '';
+                            showPage('loginPage', document.querySelector('.pill'));
+                        }, 1500);
                     }
                 });
             }
 
             function attachVarEvents() {
-                const textInput = document.getElementById('var_text');
-                const checkBox = document.getElementById('var_check');
-                const radioMale = document.getElementById('var_radio_male');
-                const radioFemale = document.getElementById('var_radio_female');
-                const radioOther = document.getElementById('var_radio_other');
-                
-                const update = () => updateVarLabel();
-                if(textInput) textInput.addEventListener('input', update);
-                if(checkBox) checkBox.addEventListener('change', update);
-                if(radioMale) radioMale.addEventListener('change', update);
-                if(radioFemale) radioFemale.addEventListener('change', update);
-                if(radioOther) radioOther.addEventListener('change', update);
+                const ids = ['var_text', 'var_check', 'var_radio_male', 'var_radio_female', 'var_radio_other'];
+                ids.forEach(id => {
+                    const el = document.getElementById(id);
+                    if(el) el.addEventListener(el.type === 'text' ? 'input' : 'change', updateVarLabel);
+                });
             }
             
             function updateVarLabel() {
@@ -425,8 +404,8 @@ def main():
                 if(document.getElementById('var_radio_other').checked) radioVal = 'другой';
                 
                 window.py_update_vars(textVal, checkVal, radioVal, function(result) {
-                    const label = `текст: ${result.text}, флажок: ${result.checkbox}, переключатель: ${result.radio}`;
-                    document.getElementById('var_label').innerText = label;
+                    document.getElementById('var_label').innerText = 
+                        `Текст: ${result.text} | Флажок: ${result.checkbox} | Радио: ${result.radio}`;
                 });
             }
         </script>
@@ -434,9 +413,9 @@ def main():
     <body>
         <div class="card">
             <div class="nav">
-                <button class="pill pill-blue" onclick="showPage('loginPage')">🔐 вход</button>
-                <button class="pill pill-green" onclick="showPage('registerPage')">📝 регистрация</button>
-                <button class="pill pill-purple" onclick="showPage('varsPage')">🎛️ переменные</button>
+                <button class="pill active" onclick="showPage('loginPage', this)">вход</button>
+                <button class="pill" onclick="showPage('registerPage', this)">регистрация</button>
+                <button class="pill" onclick="showPage('varsPage', this)">переменные</button>
             </div>
 
             <div id="loginPage" class="page">
@@ -451,14 +430,14 @@ def main():
                 </div>
                 <div class="checkbox-group">
                     <input type="checkbox" id="login_remember">
-                    <label>запомнить пароль</label>
+                    <label>запомнить меня</label>
                 </div>
-                <button class="btn-login" onclick="doLogin()">войти</button>
+                <button class="btn-main" onclick="doLogin()">войти</button>
                 <div id="login_msg" class="msg"></div>
             </div>
 
             <div id="registerPage" class="page hidden">
-                <h2>регистрация</h2>
+                <h2>новый аккаунт</h2>
                 <div class="field">
                     <label>логин</label>
                     <input type="text" id="reg_login">
@@ -469,123 +448,115 @@ def main():
                 </div>
                 <div class="field">
                     <label>о себе</label>
-                    <textarea id="reg_about" rows="3"></textarea>
+                    <textarea id="reg_about" rows="2"></textarea>
                 </div>
                 <div class="field">
                     <label>пол</label>
                     <div class="radio-group">
-                        <label><input type="radio" name="gender" value="мужской"> мужской</label>
-                        <label><input type="radio" name="gender" value="женский"> женский</label>
-                        <label><input type="radio" name="gender" value="другой"> другой</label>
+                        <label><input type="radio" name="gender" value="мужской"> муж.</label>
+                        <label><input type="radio" name="gender" value="женский"> жен.</label>
+                        <label><input type="radio" name="gender" value="другой"> др.</label>
                     </div>
                 </div>
                 <div class="field">
-                    <label>материк</label>
+                    <label>регион</label>
                     <select id="reg_continent">
                         <option value="евразия">евразия</option>
+                        <option value="америка">америка</option>
                         <option value="африка">африка</option>
-                        <option value="северная америка">северная америка</option>
-                        <option value="южная америка">южная америка</option>
                         <option value="австралия">австралия</option>
-                        <option value="антарктида">антарктида</option>
                     </select>
                 </div>
-                <button class="btn-reg" onclick="doRegister()">зарегистрироваться</button>
+                <button class="btn-main" onclick="doRegister()">создать</button>
                 <div id="reg_msg" class="msg"></div>
             </div>
 
             <div id="varsPage" class="page hidden">
-                <h2>связанные переменные</h2>
+                <h2>тест переменных</h2>
                 <div class="field">
                     <label>поле ввода</label>
                     <input type="text" id="var_text" value="привет">
                 </div>
                 <div class="checkbox-group">
                     <input type="checkbox" id="var_check">
-                    <label>флажок (согласен)</label>
+                    <label>согласие на обработку</label>
                 </div>
                 <div class="field">
                     <label>переключатель</label>
                     <div class="radio-group">
-                        <label><input type="radio" name="var_radio" id="var_radio_male" value="мужской"> мужской</label>
-                        <label><input type="radio" name="var_radio" id="var_radio_female" value="женский"> женский</label>
-                        <label><input type="radio" name="var_radio" id="var_radio_other" value="другой"> другой</label>
+                        <label><input type="radio" name="var_radio" id="var_radio_male" value="мужской"> вариант 1</label>
+                        <label><input type="radio" name="var_radio" id="var_radio_female" value="женский"> вариант 2</label>
+                        <label><input type="radio" name="var_radio" id="var_radio_other" value="другой"> вариант 3</label>
                     </div>
                 </div>
                 <div class="var-display">
-                    <span>значения через запятую:</span>
+                    <span>текущее состояние:</span>
                     <div id="var_label" class="var-value">—</div>
                 </div>
-                <div class="hint">изменяй поля — метка обновляется автоматически</div>
+                <div class="hint">данные синхронизируются с python в реальном времени</div>
             </div>
         </div>
     </body>
     </html>
     """
 
-    # загружаем html в браузер
     html_encoded = "data:text/html," + urllib.parse.quote(html_content)
     browser.LoadUrl(html_encoded)
 
-    # обработка изменения размера фрейма
     def on_configure(event):
         if browser:
             browser.NotifyMoveOrResizeStarted()
     browser_frame.bind("<Configure>", on_configure)
 
-    # ----- меню (задание 5.4) -----
+    # меню управления окном
     menubar = tk.Menu(root)
     root.config(menu=menubar)
 
-    # пункт color
-    color_menu = tk.Menu(menubar, tearoff=0)
-    menubar.add_cascade(label="Color", menu=color_menu, accelerator="Ctrl+C")
+    # тема оформления
+    theme_menu = tk.Menu(menubar, tearoff=0)
+    menubar.add_cascade(label="Theme", menu=theme_menu, accelerator="Ctrl+T")
+    
     def set_color(color):
         root.configure(bg=color)
-        # также меняем фон фрейма для эстетики
         browser_frame.configure(bg=color)
-    color_menu.add_command(label="Red", command=lambda: set_color("#ffcccc"), accelerator="Ctrl+R")
-    color_menu.add_command(label="Green", command=lambda: set_color("#ccffcc"), accelerator="Ctrl+G")
-    color_menu.add_command(label="Blue", command=lambda: set_color("#ccccff"), accelerator="Ctrl+B")
+        
+    theme_menu.add_command(label="Light Gray", command=lambda: set_color("#e5e5e5"), accelerator="Ctrl+L")
+    theme_menu.add_command(label="Dark Gray", command=lambda: set_color("#808080"), accelerator="Ctrl+D")
+    theme_menu.add_command(label="Black", command=lambda: set_color("#1a1a1a"), accelerator="Ctrl+B")
 
-    # пункт size
+    # размер окна
     size_menu = tk.Menu(menubar, tearoff=0)
     menubar.add_cascade(label="Size", menu=size_menu, accelerator="Ctrl+S")
+    
     def set_size(width, height):
         root.geometry(f"{width}x{height}")
-        # уведомляем браузер о смене размера
         browser.NotifyMoveOrResizeStarted()
-    size_menu.add_command(label="500x500", command=lambda: set_size(500, 500), accelerator="Ctrl+5")
-    size_menu.add_command(label="700x400", command=lambda: set_size(700, 400), accelerator="Ctrl+7")
+        
+    size_menu.add_command(label="500x600", command=lambda: set_size(500, 600), accelerator="Ctrl+5")
+    size_menu.add_command(label="800x600", command=lambda: set_size(800, 600), accelerator="Ctrl+8")
 
-    # горячие клавиши для меню
     def on_key(event):
-        if event.state & 0x4:  # ctrl
-            if event.keysym.lower() == 'r':
-                set_color("#ffcccc")
-            elif event.keysym.lower() == 'g':
-                set_color("#ccffcc")
-            elif event.keysym.lower() == 'b':
-                set_color("#ccccff")
-            elif event.keysym == '5':
-                set_size(500, 500)
-            elif event.keysym == '7':
-                set_size(700, 400)
+        if event.state & 0x4:  # проверяем зажат ли ctrl
+            key = event.keysym.lower()
+            if key == 'l': set_color("#e5e5e5")
+            elif key == 'd': set_color("#808080")
+            elif key == 'b': set_color("#1a1a1a")
+            elif key == '5': set_size(500, 600)
+            elif key == '8': set_size(800, 600)
     root.bind("<Control-Key>", on_key)
 
-    # цикл cef
+    # запуск цикла cef параллельно с tkinter
     def message_loop_work():
         cef.MessageLoopWork()
         root.after(10, message_loop_work)
     message_loop_work()
 
-    # закрытие окна
     def on_closing():
         browser.CloseBrowser(True)
         cef.Shutdown()
         root.destroy()
+        
     root.protocol("WM_DELETE_WINDOW", on_closing)
-
     root.mainloop()
 
 if __name__ == "__main__":
